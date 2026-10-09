@@ -1,0 +1,17 @@
+{
+  "name": "alugueis",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Controle simples de aluguéis (Express + Turso, roda na Vercel)",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "reset-pin": "node server.js --reset-pin"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@libsql/client": "^0.18.0",
+    "express": "^4.21.2"
+  }
+}

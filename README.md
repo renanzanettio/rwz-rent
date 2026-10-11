@@ -60,15 +60,18 @@ Valem só para o aparelho/navegador onde foram escolhidos.
 ## Como usar
 
 - **Casas**: cadastre cada casa (inquilino, aluguel, dia do vencimento). O aluguel do mês é criado sozinho.
-  - *Grupo*: casas que dividem a mesma conta de água e luz usam o mesmo nome de grupo (ex.: "Fundos").
-  - *Quem paga a água e a luz na companhia*: seu pai, ou a pessoa que cuida da casa. Vem preenchido ao lançar uma conta.
+  - *Grupo de luz* e *grupo de água*: separados, porque nem sempre as mesmas casas dividem as duas contas. Casas com o mesmo
+    nome de grupo (ex.: "Fundos") dividem aquela conta; deixe vazio se a casa tem a conta só dela.
+  - *Quem paga a água e a luz na companhia*: quem paga primeiro e depois recebe dos moradores (seu pai). Vem preenchido ao lançar a conta.
 - **Mês**: verde = pago, amarelo = a pagar, vermelho = atrasado, azul = parcial. Toque no quadro para registrar o pagamento
   (valor, Pix/Dinheiro/Outro, data e comprovante em foto ou PDF; em dinheiro não pede comprovante).
-- **Água e luz**: "Lançar conta" com o valor total e as casas; duas casas dividem igualmente (o centavo que sobra vai para a
-  primeira). Os moradores pagam a parte deles e, separado, você marca quando a conta foi paga na companhia (quem pagou,
-  data e comprovante). O resumo do mês avisa "N contas para pagar".
-- **Relatório** (modo completo): totais por mês, casa, tipo e forma de recebimento, o que está em aberto e as contas ainda
-  não pagas na companhia. "Imprimir ou salvar em PDF" usa o navegador; o CSV abre direto no Excel.
+- **Água e luz** seguem um ciclo de três passos: **lançada** (você informa o valor total e as casas; duas casas dividem
+  igualmente, o centavo que sobra vai para a primeira) → **paga na companhia** (seu pai paga; você registra quem pagou, a data e o
+  comprovante) → **recebida** (os moradores pagam a parte deles, como qualquer cobrança). O pagamento da conta é só um status:
+  não entra como saída e não diminui nenhum total; os totais mostram o que os moradores pagaram. O resumo do mês avisa
+  "N contas para pagar" e "R$ X pagos na companhia, a receber" (o que seu pai adiantou e ainda não recebeu de volta).
+- **Relatório** (modo completo): totais por mês, casa, tipo e forma de recebimento, o que está em aberto, as contas
+  ainda não pagas ou não recebidas e o total adiantado a receber. "Imprimir ou salvar em PDF" usa o navegador; o CSV abre direto no Excel.
 
 ## Backup e PIN
 

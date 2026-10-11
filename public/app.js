@@ -194,7 +194,10 @@
     return c.due_date ? `Vence ${fmtDate(c.due_date)}` : 'A pagar';
   }
   const findCharge = (hid, kind) => state.data.charges.find((x) => x.house_id === hid && x.kind === kind);
-  const billState = (b) => (b.company_paid_at ? ['pago', 'Paga'] : b.due_date && b.due_date < state.data.today ? ['atrasado', 'Vencida'] : ['pendente', 'A pagar']);
+  // Ciclo da conta: lançada (a pagar) -> paga na companhia (a receber de volta) -> recebida dos moradores
+  const STAGE = { lancada: ['pendente', 'A pagar'], vencida: ['atrasado', 'Vencida'], paga: ['parcial', 'Paga, a receber'], recebida: ['pago', 'Recebida'] };
+  const billState = (b) => STAGE[b.stage] || STAGE.lancada;
+  const grpOf = (h, kind) => (kind === 'luz' ? h.grp_luz : h.grp_agua) || '';
   const billTitle = (b) => `${KIND[b.kind]}, ${b.houses.map(esc).join(' e ')}`;
 
   async function viewMonth() {
@@ -241,13 +244,14 @@
 
   function billsSection() {
     const all = state.data.bills;
-    const list = isFull() ? all : all.filter((b) => !b.company_paid_at);
+    const list = isFull() ? all : all.filter((b) => b.stage !== 'recebida');
     if (!list.length) return '';
-    return `<section class="bills"><h3>${isFull() ? 'Contas de água e luz' : 'Contas para pagar na companhia'}</h3>
+    return `<section class="bills"><h3>${isFull() ? 'Contas de água e luz' : 'Contas de água e luz em andamento'}</h3>
       <ul class="rows">${list.map((b) => {
         const [st, label] = billState(b);
+        const info = b.stage === 'paga' ? `Falta receber ${brl(b.remaining_cents)}` : b.stage === 'recebida' ? 'Tudo recebido' : b.due_date ? `Vence ${fmtDate(b.due_date)}` : 'Ainda não paga';
         return `<li class="btnrow"><button class="rowbtn" data-act="bill-open" data-id="${b.id}">
-          <div><div class="name">${billTitle(b)}</div><div class="meta">Quem paga: ${esc(b.payer || 'não informado')}${b.due_date ? `. Vence ${fmtDate(b.due_date)}` : ''}</div></div>
+          <div><div class="name">${billTitle(b)}</div><div class="meta">Quem paga: ${esc(b.payer || 'não informado')}. ${info}</div></div>
           <div class="right"><b>${brl(b.total_cents)}</b><span class="pill st-${st}">${label}</span></div></button></li>`;
       }).join('')}</ul></section>`;
   }
@@ -260,12 +264,14 @@
     const pct = expected ? Math.min(100, Math.round((received / expected) * 100)) : 0;
     const late = cs.filter((c) => c.status === 'atrasado').length;
     const wait = cs.filter((c) => c.status === 'pendente' || c.status === 'parcial').length;
-    const toPay = d.bills.filter((b) => !b.company_paid_at).length;
+    const toPay = d.bills.filter((b) => b.stage === 'lancada' || b.stage === 'vencida').length;
+    const advance = sum(d.bills, 'advance_cents');
     const flags = [
       late ? `<span class="flag late">${plural(late, 'atrasado', 'atrasados')}</span>` : '',
       wait ? `<span class="flag wait">${wait} a receber</span>` : '',
       cs.length && !late && !wait ? '<span class="flag ok">Tudo recebido neste mês</span>' : '',
       toPay ? `<span class="flag wait">${plural(toPay, 'conta', 'contas')} para pagar</span>` : '',
+      advance > 0 ? `<span class="flag wait">${brl(advance)} pagos na companhia, a receber</span>` : '',
     ].join('');
     const canNext = state.month < addMonth(curMonth(), 1);
     $('#main').innerHTML = `
@@ -358,7 +364,7 @@
         </div></li>`).join('');
     const shared = c.bill_houses && c.bill_houses.length > 1
       ? `<p class="hint">Conta de ${brl(c.bill_total_cents)} dividida igualmente entre ${c.bill_houses.map(esc).join(' e ')}.</p>` : '';
-    const company = bill ? `<p class="line"><span>Conta na companhia: <b>${bill.company_paid_at ? `paga em ${fmtDate(bill.company_paid_at)}` : 'ainda não paga'}</b></span><button class="btn small" data-act="bill-open" data-id="${bill.id}">Ver conta</button></p>` : '';
+    const company = bill ? `<p class="line"><span>Conta na companhia: <b>${bill.company_paid_at ? `paga${bill.payer ? ` por ${esc(bill.payer)}` : ''} em ${fmtDate(bill.company_paid_at)}` : 'ainda não paga'}</b></span><button class="btn small" data-act="bill-open" data-id="${bill.id}">Ver conta</button></p>` : '';
     const partial = c.paid_cents > 0 && c.remaining_cents > 0
       ? `<p class="line"><span>Já recebido: <b>${brl(c.paid_cents)}</b></span><span>Falta: <b>${brl(c.remaining_cents)}</b></span></p>` : '';
     const today = todayStr();
@@ -467,14 +473,20 @@
            <p class="err" id="co-err" role="alert"></p>
            <button class="btn primary block" id="co-save">Marcar como paga na companhia</button>
          </form>`;
+    const who = esc(b.payer || 'não informado');
+    const steps = `<ol class="steps">
+      <li class="done"><span class="n">✓</span><div><b>Lançada</b><small>${brl(b.total_cents)} em ${monthLabel(b.month)}${b.due_date ? `, vence ${fmtFull(b.due_date)}` : ''}</small></div></li>
+      <li class="${b.company_paid_at ? 'done' : 'todo'}"><span class="n">${b.company_paid_at ? '✓' : '2'}</span><div><b>Paga na companhia</b><small>${b.company_paid_at ? `Por ${who} em ${fmtFull(b.company_paid_at)}` : `Ainda não paga. Quem paga: ${who}`}</small></div></li>
+      <li class="${b.stage === 'recebida' ? 'done' : 'todo'}"><span class="n">${b.stage === 'recebida' ? '✓' : '3'}</span><div><b>Recebida dos moradores</b><small>${brl(b.received_cents)} de ${brl(b.total_cents)}${b.stage === 'paga' ? `, falta ${brl(b.remaining_cents)}` : ''}</small></div></li>
+    </ol>`;
     openSheet(`
       ${sheetHead(billTitle(b), monthLabel(b.month))}
       <div class="line"><span class="big">${brl(b.total_cents)}</span><span class="pill st-${st}">${label}</span></div>
-      ${b.due_date ? `<p class="muted">Vencimento: ${fmtFull(b.due_date)}</p>` : ''}
-      <p>Recebido dos moradores: <b>${brl(b.received_cents)}</b> de ${brl(b.total_cents)}</p>
-      <ul class="rows" style="margin-top:12px">${shares}</ul>
-      <h3>Pagamento na companhia</h3>
-      <p>Quem paga: <b>${esc(b.payer || 'não informado')}</b></p>
+      ${steps}
+      <p class="hint">O pagamento da conta não conta como gasto: os totais do mês mostram só o que os moradores pagaram.</p>
+      <h3>Parte de cada casa</h3>
+      <ul class="rows" style="margin-top:8px">${shares}</ul>
+      <h3>Pagamento da conta</h3>
       ${company}
       <details>
         <summary>Trocar quem paga</summary>
@@ -529,8 +541,8 @@
     const kind = pre.kind && pre.kind !== 'aluguel' ? pre.kind : 'agua';
     const sel = new Set();
     const seed = houses.find((h) => h.id === Number(pre.house));
-    if (seed) houses.filter((h) => h.id === seed.id || (seed.grp && h.grp === seed.grp)).forEach((h) => !billTaken(h.id, kind) && sel.add(h.id));
-    state.bill = { kind, sel, houses, payerTouched: false };
+    if (seed) houses.filter((h) => h.id === seed.id || (grpOf(seed, kind) && grpOf(h, kind) === grpOf(seed, kind))).forEach((h) => !billTaken(h.id, kind) && sel.add(h.id));
+    state.bill = { kind, sel, houses, seed: seed ? seed.id : null, payerTouched: false };
     const payers = [...new Set([...houses.map((h) => h.bill_payer), ...state.data.bills.map((b) => b.payer)].filter(Boolean))];
     openSheet(`
       ${sheetHead('Lançar conta', `Conta de ${monthLabel(state.month)}`)}
@@ -547,7 +559,7 @@
         <input id="b-due" type="date">
         <fieldset><legend>Quem mora e divide esta conta?</legend>
           <div class="checks" id="b-houses"></div>
-          <p class="hint">Se marcar mais de uma casa, o valor é dividido igualmente. Casas do mesmo grupo são marcadas juntas.</p>
+          <p class="hint">Se marcar mais de uma casa, o valor é dividido igualmente. Casas que dividem esta conta (grupo de luz ou de água no cadastro) são marcadas juntas.</p>
         </fieldset>
         <div class="preview hidden" id="b-preview"></div>
         <label for="b-payer">Quem vai pagar a conta na companhia?</label>
@@ -617,7 +629,7 @@
         <li class="${h.active ? '' : 'off'}"><div><div class="name">${esc(h.name)}${h.active ? '' : ' (inativa)'}</div>
           <div class="meta">${esc(h.tenant || 'Sem inquilino')}, aluguel de ${brl(h.rent_cents)} no dia ${h.due_day}</div>
           ${full ? `<div class="meta">${[h.phone && `Tel. ${esc(h.phone)}`, h.address && esc(h.address)].filter(Boolean).join('. ')}</div>` : ''}
-          ${h.grp || h.bill_payer ? `<div class="meta">${[h.grp && `Divide água e luz: ${esc(h.grp)}`, h.bill_payer && `Conta paga por ${esc(h.bill_payer)}`].filter(Boolean).join('. ')}</div>` : ''}</div>
+          ${h.grp_luz || h.grp_agua || h.bill_payer ? `<div class="meta">${[h.grp_luz && `Divide a luz: ${esc(h.grp_luz)}`, h.grp_agua && `Divide a água: ${esc(h.grp_agua)}`, h.bill_payer && `Conta paga por ${esc(h.bill_payer)}`].filter(Boolean).join('. ')}</div>` : ''}</div>
           <button class="btn small" data-act="house-edit" data-id="${h.id}">Editar</button></li>`).join('')}</ul>`
         : '<div class="empty-state"><h3>Nenhuma casa ainda</h3><p class="muted">Toque em “Nova casa” para começar. O aluguel de cada mês é criado sozinho.</p></div>'}`;
   }
@@ -641,12 +653,14 @@
         <label for="h-address">Endereço</label><input id="h-address" type="text" value="${esc(h?.address)}" maxlength="150">
         <label for="h-rent">Valor do aluguel (R$)</label><input id="h-rent" type="text" inputmode="decimal" value="${h ? centsInput(h.rent_cents) : ''}" required>
         <label for="h-due">Dia do vencimento</label><input id="h-due" type="number" min="1" max="31" value="${h ? h.due_day : 5}" required>
-        <label for="h-grp">Divide água e luz com outra casa? (grupo)</label>
-        <input id="h-grp" type="text" value="${esc(h?.grp)}" maxlength="30" placeholder="Deixe vazio se não divide">
-        <p class="hint">As casas que dividem a mesma conta devem ter o mesmo nome de grupo, por exemplo “Fundos”.</p>
+        <label for="h-grp-luz">Divide a conta de luz com outra casa? (grupo)</label>
+        <input id="h-grp-luz" type="text" value="${esc(h?.grp_luz)}" maxlength="30" placeholder="Deixe vazio se não divide">
+        <label for="h-grp-agua">Divide a conta de água com outra casa? (grupo)</label>
+        <input id="h-grp-agua" type="text" value="${esc(h?.grp_agua)}" maxlength="30" placeholder="Deixe vazio se não divide">
+        <p class="hint">Casas que dividem a mesma conta usam o mesmo nome de grupo, por exemplo “Fundos”. Luz e água têm grupos separados: dá para dividir só uma delas.</p>
         <label for="h-payer">Quem paga a água e a luz na companhia?</label>
         <input id="h-payer" type="text" value="${esc(h?.bill_payer)}" maxlength="60" placeholder="Ex.: Pai, Seu José">
-        <p class="hint">Pode ser seu pai ou a pessoa que cuida da casa. Já vem preenchido quando você lança uma conta.</p>
+        <p class="hint">Quem paga a conta primeiro e depois recebe dos moradores (seu pai, por exemplo). Já vem preenchido quando você lança uma conta.</p>
         <label for="h-start">Cobrar aluguel a partir de</label>
         <select id="h-start">${monthOptions(start, addMonth(curMonth(), -24), addMonth(curMonth(), 1))}</select>
         <p class="hint">Meses anteriores a este não geram cobrança.</p>
@@ -663,7 +677,7 @@
     if (!(rent > 0)) return (err.textContent = 'Digite o valor do aluguel, por exemplo 800,00.');
     const body = {
       name: $('#h-name').value, tenant: $('#h-tenant').value, phone: $('#h-phone').value, address: $('#h-address').value,
-      rent_cents: rent, due_day: Number($('#h-due').value), grp: $('#h-grp').value, bill_payer: $('#h-payer').value, start_month: $('#h-start').value,
+      rent_cents: rent, due_day: Number($('#h-due').value), grp_agua: $('#h-grp-agua').value, grp_luz: $('#h-grp-luz').value, bill_payer: $('#h-payer').value, start_month: $('#h-start').value,
       active: $('#h-active') ? $('#h-active').checked : true,
     };
     try {
@@ -734,11 +748,12 @@
     const methods = r.byMethod.length
       ? `<div class="report-block"><h3>Como foi recebido</h3><table><thead><tr><th>Forma</th><th>Valor</th></tr></thead><tbody>${r.byMethod.map((m) => `<tr><td>${METHOD[m.method] || esc(m.method)}</td><td>${brl(m.cents)}</td></tr>`).join('')}</tbody></table></div>` : '';
     const bills = r.bills.count
-      ? `<div class="report-block"><h3>Contas de água e luz na companhia</h3>
-          <p class="muted">${plural(r.bills.count, 'conta', 'contas')} no período, ${brl(r.bills.paid_cents)} pagos de ${brl(r.bills.total_cents)}.</p>
-          ${r.bills.pending.length ? `<div class="scroll"><table><thead><tr><th>Conta</th><th>Mês</th><th>Casas</th><th>Quem paga</th><th>Valor</th></tr></thead><tbody>
-            ${r.bills.pending.map((b) => `<tr><td>${KIND[b.kind]}</td><td>${monthShort(b.month)}</td><td>${b.houses.map(esc).join(', ')}</td><td>${esc(b.payer || '-')}</td><td>${brl(b.total_cents)}</td></tr>`).join('')}
-          </tbody></table></div>` : '<p class="muted">Todas pagas.</p>'}</div>` : '';
+      ? `<div class="report-block"><h3>Contas de água e luz</h3>
+          <p class="muted">${plural(r.bills.count, 'conta', 'contas')} no período: ${brl(r.bills.total_cents)} em contas, ${brl(r.bills.paid_cents)} já pagas na companhia e ${brl(r.bills.received_cents)} recebidos dos moradores.</p>
+          ${r.bills.advance_cents > 0 ? `<p>Pagas na companhia e ainda a receber dos moradores: <b>${brl(r.bills.advance_cents)}</b></p>` : ''}
+          ${r.bills.pending.length ? `<div class="scroll"><table><thead><tr><th>Conta</th><th>Mês</th><th>Casas</th><th>Quem paga</th><th>Valor</th><th>Situação</th><th>Falta receber</th></tr></thead><tbody>
+            ${r.bills.pending.map((b) => `<tr><td>${KIND[b.kind]}</td><td>${monthShort(b.month)}</td><td>${b.houses.map(esc).join(', ')}</td><td>${esc(b.payer || '-')}</td><td>${brl(b.total_cents)}</td><td>${(STAGE[b.stage] || STAGE.lancada)[1]}</td><td>${b.stage === 'paga' ? brl(b.advance_cents) : '-'}</td></tr>`).join('')}
+          </tbody></table></div>` : '<p class="muted">Todas as contas foram pagas e recebidas.</p>'}</div>` : '';
     $('#main').innerHTML = `
       <div class="sectionbar"><h2>Relatório</h2></div>
       <div class="filters no-print">
@@ -830,12 +845,20 @@
       $('#p-receipt').classList.toggle('hidden', cash);
       $('#p-cash').classList.toggle('hidden', !cash);
     } else if (t.name === 'kind' && state.bill) {
-      state.bill.kind = t.value;
+      const b = state.bill;
+      b.kind = t.value;
+      const seed = b.houses.find((x) => x.id === b.seed);
+      if (seed) {
+        b.sel = new Set();
+        const g = grpOf(seed, b.kind);
+        b.houses.filter((x) => x.id === seed.id || (g && grpOf(x, b.kind) === g)).forEach((x) => !billTaken(x.id, b.kind) && b.sel.add(x.id));
+      }
       renderBillHouses();
     } else if (t.closest('#b-houses') && t.type === 'checkbox') {
       const b = state.bill;
       const h = b.houses.find((x) => x.id === Number(t.value));
-      const mates = h.grp ? b.houses.filter((x) => x.grp === h.grp) : [h];
+      const g = grpOf(h, b.kind);
+      const mates = g ? b.houses.filter((x) => grpOf(x, b.kind) === g) : [h];
       mates.forEach((m) => {
         if (billTaken(m.id, b.kind)) return;
         if (t.checked) b.sel.add(m.id); else b.sel.delete(m.id);

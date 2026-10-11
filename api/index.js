@@ -33,7 +33,7 @@ const SCHEMA = [
   'CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)',
   `CREATE TABLE IF NOT EXISTS houses (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, address TEXT NOT NULL DEFAULT '', tenant TEXT NOT NULL DEFAULT '',
-    phone TEXT NOT NULL DEFAULT '', rent_cents INTEGER NOT NULL, due_day INTEGER NOT NULL DEFAULT 5, grp TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '', rent_cents INTEGER NOT NULL, due_day INTEGER NOT NULL DEFAULT 5, grp_agua TEXT NOT NULL DEFAULT '', grp_luz TEXT NOT NULL DEFAULT '',
     bill_payer TEXT NOT NULL DEFAULT '', start_month TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)`,
   `CREATE TABLE IF NOT EXISTS bills (
     id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK (kind IN ('agua','luz')), month TEXT NOT NULL,
@@ -57,6 +57,15 @@ function init() {
     dbPromise = (async () => {
       const client = makeClient();
       await client.batch(SCHEMA.map((sql) => ({ sql, args: [] })), 'write');
+      // Bancos criados antes dos grupos por tipo de conta: acrescenta as colunas e copia o grupo antigo
+      const cols = (await client.execute('PRAGMA table_info(houses)')).rows.map((r) => r[1]);
+      if (!cols.includes('grp_luz')) {
+        await client.batch([
+          { sql: "ALTER TABLE houses ADD COLUMN grp_agua TEXT NOT NULL DEFAULT ''", args: [] },
+          { sql: "ALTER TABLE houses ADD COLUMN grp_luz TEXT NOT NULL DEFAULT ''", args: [] },
+          ...(cols.includes('grp') ? [{ sql: 'UPDATE houses SET grp_agua = grp, grp_luz = grp', args: [] }] : []),
+        ], 'write');
+      }
       db = client;
     })().catch((e) => {
       dbPromise = null; // tenta de novo na próxima requisição
@@ -146,6 +155,24 @@ function decorate(c, t) {
   else if (c.paid_cents > 0) status = 'parcial';
   const days_late = status === 'atrasado' ? Math.round((Date.parse(t) - Date.parse(c.due_date)) / 864e5) : 0;
   return { ...c, remaining_cents: remaining, status, days_late };
+}
+
+// Ciclo da conta: lançada (a pagar) -> paga na companhia (pelo pai, a receber de volta) -> recebida dos moradores.
+// O pagamento da conta é só um status: não entra como saída nem diminui nenhum total.
+function billView(b, cs, t) {
+  const received = sum(cs, 'paid_cents');
+  const remaining = Math.max(0, b.total_cents - received);
+  let stage = 'lancada';
+  if (b.company_paid_at) stage = received >= b.total_cents ? 'recebida' : 'paga';
+  else if (b.due_date && b.due_date < t) stage = 'vencida';
+  return {
+    ...b,
+    houses: cs.map((c) => c.house_name),
+    received_cents: received,
+    remaining_cents: remaining,
+    advance_cents: b.company_paid_at ? remaining : 0, // já pago na companhia e ainda não recebido
+    stage,
+  };
 }
 
 const CHARGE_SELECT = `
@@ -342,7 +369,7 @@ function houseInput(b) {
   if (!isMonth(start)) bad('Mês inicial inválido');
   return {
     name, address: str(b.address, 150), tenant: str(b.tenant, 80), phone: str(b.phone, 30), rent_cents: rent, due_day: due,
-    grp: str(b.grp, 30), bill_payer: str(b.bill_payer, 60), start_month: start, active: b.active === 0 || b.active === false ? 0 : 1,
+    grp_agua: str(b.grp_agua, 30), grp_luz: str(b.grp_luz, 30), bill_payer: str(b.bill_payer, 60), start_month: start, active: b.active === 0 || b.active === false ? 0 : 1,
   };
 }
 
@@ -353,8 +380,8 @@ app.get('/api/houses', wrap(async (req, res) => {
 app.post('/api/houses', wrap(async (req, res) => {
   const h = houseInput(req.body);
   const r = await run(
-    'INSERT INTO houses(name, address, tenant, phone, rent_cents, due_day, grp, bill_payer, start_month, active) VALUES(?,?,?,?,?,?,?,?,?,?)',
-    [h.name, h.address, h.tenant, h.phone, h.rent_cents, h.due_day, h.grp, h.bill_payer, h.start_month, h.active]
+    'INSERT INTO houses(name, address, tenant, phone, rent_cents, due_day, grp_agua, grp_luz, bill_payer, start_month, active) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+    [h.name, h.address, h.tenant, h.phone, h.rent_cents, h.due_day, h.grp_agua, h.grp_luz, h.bill_payer, h.start_month, h.active]
   );
   res.json({ id: Number(r.lastInsertRowid) });
 }));
@@ -371,8 +398,8 @@ app.put('/api/houses/:id', wrap(async (req, res) => {
     [id, today().slice(0, 7)]
   );
   await batch([
-    ['UPDATE houses SET name=?, address=?, tenant=?, phone=?, rent_cents=?, due_day=?, grp=?, bill_payer=?, start_month=?, active=? WHERE id=?',
-      [h.name, h.address, h.tenant, h.phone, h.rent_cents, h.due_day, h.grp, h.bill_payer, h.start_month, h.active, id]],
+    ['UPDATE houses SET name=?, address=?, tenant=?, phone=?, rent_cents=?, due_day=?, grp_agua=?, grp_luz=?, bill_payer=?, start_month=?, active=? WHERE id=?',
+      [h.name, h.address, h.tenant, h.phone, h.rent_cents, h.due_day, h.grp_agua, h.grp_luz, h.bill_payer, h.start_month, h.active, id]],
     ...open.map((c) => ['UPDATE charges SET amount_cents = ?, due_date = ? WHERE id = ?', [h.rent_cents, dueDate(c.month, h.due_day), c.id]]),
   ]);
   res.json({ ok: true });
@@ -411,10 +438,7 @@ app.get('/api/month/:ym', wrap(async (req, res) => {
     bill_total_cents: r.bill_id ? billTotals.get(r.bill_id) : null,
     bill_houses: r.bill_id ? billHouses.get(r.bill_id) : null,
   }));
-  const bills = billRows.map((b) => {
-    const cs = charges.filter((c) => c.bill_id === b.id);
-    return { ...b, houses: cs.map((c) => c.house_name), received_cents: sum(cs, 'paid_cents') };
-  });
+  const bills = billRows.map((b) => billView(b, charges.filter((c) => c.bill_id === b.id), t));
   res.json({ month: ym, today: t, houses, charges, bills });
 }));
 
@@ -637,14 +661,17 @@ app.get('/api/report', wrap(async (req, res) => {
       amount_cents: r.amount_cents, remaining_cents: r.remaining_cents, status: r.status, days_late: r.days_late,
     }))
     .sort((a, b) => (a.due_date || a.month).localeCompare(b.due_date || b.month));
-  const names = new Map();
-  for (const r of rows) if (r.bill_id) names.set(r.bill_id, [...(names.get(r.bill_id) || []), r.house_name]);
+  const t = today();
+  const bv = billRows.map((b) => billView(b, rows.filter((r) => r.bill_id === b.id), t));
   const bills = {
-    count: billRows.length,
-    total_cents: sum(billRows, 'total_cents'),
-    paid_cents: sum(billRows.filter((b) => b.company_paid_at), 'total_cents'),
-    pending: billRows.filter((b) => !b.company_paid_at).map((b) => ({
-      kind: b.kind, month: b.month, total_cents: b.total_cents, payer: b.payer, due_date: b.due_date, houses: names.get(b.id) || [],
+    count: bv.length,
+    total_cents: sum(bv, 'total_cents'),
+    paid_cents: sum(bv.filter((b) => b.company_paid_at), 'total_cents'),
+    received_cents: sum(bv, 'received_cents'),
+    advance_cents: sum(bv, 'advance_cents'),
+    pending: bv.filter((b) => b.stage !== 'recebida').map((b) => ({
+      kind: b.kind, month: b.month, total_cents: b.total_cents, payer: b.payer, due_date: b.due_date, houses: b.houses,
+      stage: b.stage, received_cents: b.received_cents, advance_cents: b.advance_cents,
     })),
   };
   res.json({ from, to, totals: totals(rows), byMonth, byHouse, byKind, byMethod, open, bills });
